@@ -1,0 +1,11 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.packager
+      - -t
+      - europe-west2-docker.pkg.dev/$PROJECT_ID/clearkey/clear-key-packager:latest
+      - .
+images:
+  - europe-west2-docker.pkg.dev/$PROJECT_ID/clearkey/clear-key-packager:latest

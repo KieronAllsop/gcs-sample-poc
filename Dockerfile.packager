@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /usr/local/bin/packager \
+    https://github.com/shaka-project/shaka-packager/releases/download/v3.9.3/packager-linux-x64 \
+    && echo "7a3cf35ad146fd7810b4ededab363c8a3e6121d1b2c8391f53863126186f9ee6  /usr/local/bin/packager" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/packager
+
+COPY requirements-packager.txt ./
+RUN pip install --no-cache-dir -r requirements-packager.txt
+
+COPY packager_service.py ./
+
+CMD ["sh", "-c", "uvicorn packager_service:app --host 0.0.0.0 --port ${PORT:-8080}"]

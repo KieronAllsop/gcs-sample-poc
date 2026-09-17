@@ -1,0 +1,11 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.trigger
+      - -t
+      - europe-west2-docker.pkg.dev/$PROJECT_ID/clearkey/transcoder-trigger:latest
+      - .
+images:
+  - europe-west2-docker.pkg.dev/$PROJECT_ID/clearkey/transcoder-trigger:latest

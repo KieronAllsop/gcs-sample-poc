@@ -1,0 +1,19 @@
+.terraform/
+**/.terraform/
+terraform.tfstate
+terraform.tfstate.*
+**/terraform.tfstate
+**/terraform.tfstate.*
+.terraform.tfstate.lock.info
+**/.terraform.tfstate.lock.info
+.venv/
+__pycache__/
+*.py[cod]
+lambda_function.zip
+.env
+.env.*
+.DS_Store
+
+# Local build and tool output
+*.log
+*.zip
