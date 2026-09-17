@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parent
 TERRAFORM_DIR = ROOT / "terraform_gcp"
 DEFAULT_PROJECT = os.environ.get("GCP_PROJECT_ID", "clearkey-video-gcp")
 DEFAULT_REGION = os.environ.get("GCP_REGION", "europe-west2")
-STATE_BUCKET = os.environ.get("GCP_TFSTATE_BUCKET", "clearkey-video-gcp-tfstate-pineapple")
 REQUIRED_SERVICES = [
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
@@ -48,9 +47,9 @@ def state_addresses(env=None):
     return set(result.stdout.splitlines())
 
 
-def ensure_state_bucket(project_id, region):
+def ensure_state_bucket(state_bucket, project_id, region):
     result = subprocess.run(
-        ["gcloud", "storage", "buckets", "describe", f"gs://{STATE_BUCKET}"],
+        ["gcloud", "storage", "buckets", "describe", f"gs://{state_bucket}"],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -64,7 +63,7 @@ def ensure_state_bucket(project_id, region):
             "storage",
             "buckets",
             "create",
-            f"gs://{STATE_BUCKET}",
+            f"gs://{state_bucket}",
             "--project",
             project_id,
             "--location",
@@ -73,7 +72,7 @@ def ensure_state_bucket(project_id, region):
             "--public-access-prevention",
         ]
     )
-    run(["gcloud", "storage", "buckets", "update", f"gs://{STATE_BUCKET}", "--versioning"])
+    run(["gcloud", "storage", "buckets", "update", f"gs://{state_bucket}", "--versioning"])
 
 
 def enable_required_services(project_id):
@@ -137,7 +136,7 @@ def remote_resource_exists(address, resource_id, project_id, region):
     return result.returncode == 0 and (address != "google_sql_user.db_admin" or bool(result.stdout.strip()))
 
 
-def import_existing_resources(project_id, region, env):
+def import_existing_resources(project_id, region, source_bucket, egress_bucket, env):
     project_number = run(
         [
             "gcloud",
@@ -150,11 +149,12 @@ def import_existing_resources(project_id, region, env):
     ).stdout.strip()
 
     resources = {
-        "google_storage_bucket.source": "clearkey-video-gcp-source-pineapple",
-        "google_storage_bucket.egress": "clearkey-video-gcp-egress-pineapple",
+        "google_storage_bucket.source": source_bucket,
+        "google_storage_bucket.egress": egress_bucket,
         "google_service_account.trigger": f"projects/{project_id}/serviceAccounts/clearkey-trigger@{project_id}.iam.gserviceaccount.com",
         "google_service_account.manifest_patcher": f"projects/{project_id}/serviceAccounts/clearkey-manifest-patcher@{project_id}.iam.gserviceaccount.com",
         "google_service_account.license_server": f"projects/{project_id}/serviceAccounts/clearkey-license-server@{project_id}.iam.gserviceaccount.com",
+        "google_service_account.terraform_deployer": f"projects/{project_id}/serviceAccounts/clearkey-terraform-deployer@{project_id}.iam.gserviceaccount.com",
         "google_artifact_registry_repository.clearkey": f"projects/{project_id}/locations/{region}/repositories/clearkey",
         "google_sql_database_instance.license_db": f"{project_id}/clearkey-license-db",
         "google_cloud_run_v2_service.license_server": f"projects/{project_id}/locations/{region}/services/license-server",
@@ -217,6 +217,17 @@ def main():
     parser.add_argument("--project-id", default=DEFAULT_PROJECT)
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument(
+        "--bucket-suffix",
+        default=os.environ.get("GCP_BUCKET_SUFFIX"),
+        required=os.environ.get("GCP_BUCKET_SUFFIX") is None,
+        help="Account-specific suffix used for the globally unique GCS bucket names.",
+    )
+    parser.add_argument(
+        "--deployer-impersonator",
+        default=os.environ.get("GCP_DEPLOYER_IMPERSONATOR"),
+        help="IAM principal allowed to impersonate the Terraform deployer, for example user:admin@example.com.",
+    )
+    parser.add_argument(
         "--skip-import",
         action="store_true",
         help="Do not import resources already created outside Terraform.",
@@ -224,11 +235,14 @@ def main():
     parser.add_argument("--db-password")
     parser.add_argument("--clear-key-value")
     args = parser.parse_args()
+    source_bucket = f"clearkey-video-gcp-source-{args.bucket_suffix}"
+    egress_bucket = f"clearkey-video-gcp-egress-{args.bucket_suffix}"
+    state_bucket = f"clearkey-video-gcp-tfstate-{args.bucket_suffix}"
 
     run(["gcloud", "config", "set", "project", args.project_id])
     enable_required_services(args.project_id)
-    ensure_state_bucket(args.project_id, args.region)
-    terraform("init", "-input=false")
+    ensure_state_bucket(state_bucket, args.project_id, args.region)
+    terraform("init", "-input=false", f"-backend-config=bucket={state_bucket}")
 
     db_password = (
         args.db_password
@@ -248,15 +262,27 @@ def main():
     terraform_env["TF_VAR_clear_key_value"] = clear_key_value
 
     if not args.skip_import:
-        import_existing_resources(args.project_id, args.region, terraform_env)
+        import_existing_resources(
+            args.project_id, args.region, source_bucket, egress_bucket, terraform_env
+        )
 
-    terraform(
+    apply_arguments = [
         "apply",
         "-auto-approve",
         "-input=false",
         "-lock-timeout=60s",
         f"-var=project_id={args.project_id}",
         f"-var=region={args.region}",
+        f"-var=source_bucket_name={source_bucket}",
+        f"-var=egress_bucket_name={egress_bucket}",
+    ]
+    if args.deployer_impersonator:
+        apply_arguments.append(
+            f"-var=deployer_impersonator_principal={args.deployer_impersonator}"
+        )
+
+    terraform(
+        *apply_arguments,
         env=terraform_env,
     )
 

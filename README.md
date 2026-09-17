@@ -40,9 +40,7 @@ This is a ClearKey learning POC. It is not equivalent to a production Widevine D
 
 ## GCP Resources
 
-- Source bucket: `clearkey-video-gcp-source-pineapple`
-- Egress bucket: `clearkey-video-gcp-egress-pineapple`
-- Terraform state bucket: `clearkey-video-gcp-tfstate-pineapple`
+- Source, egress, and Terraform state buckets use the suffix supplied to `setup.py`.
 - Region: `europe-west2`
 - Cloud SQL instance: `clearkey-license-db`
 - Artifact Registry repository: `clearkey`
@@ -78,6 +76,7 @@ If `--db-password` and `--clear-key-value` are omitted, the setup script generat
 
 ```bash
 python3 setup.py \
+  --bucket-suffix your-account-suffix \
   --db-password 'your-db-password' \
   --clear-key-value '0123456789abcdef0123456789abcdef'
 ```
@@ -89,7 +88,7 @@ The ClearKey value must contain exactly 32 hexadecimal characters and must not i
 The GCP setup script initializes the GCS Terraform backend, imports resources created manually when present, supplies the secrets, applies Terraform, and prints service outputs. Terraform builds all three container images before creating the Cloud Run services:
 
 ```bash
-python3 setup.py
+python3 setup.py --bucket-suffix your-account-suffix
 ```
 
 The setup script creates the Terraform state bucket if it does not exist. The state bucket is intentionally retained between deployments because Terraform needs it before `terraform init` and uses it to preserve infrastructure state. The project itself, billing, and `gcloud auth login` must already be configured.
@@ -99,10 +98,61 @@ Use alternate project or region values when needed:
 ```bash
 python3 setup.py \
   --project-id clearkey-video-gcp \
-  --region europe-west2
+  --region europe-west2 \
+  --bucket-suffix your-account-suffix \
+  --deployer-impersonator user:you@example.com
 ```
 
 The separate Terraform root is in [terraform_gcp](terraform_gcp).
+
+The runtime and deployment IAM grants, their reasons, and remaining production
+gaps are recorded in [IAM.md](IAM.md).
+
+### Deployment identity
+
+The deployment now uses a dedicated `clearkey-terraform-deployer` service account. Runtime service accounts are kept separate:
+
+- `clearkey-terraform-deployer` provisions infrastructure and assigns the required IAM resources.
+- `clearkey-trigger` runs the Transcoder and Eventarc trigger workload.
+- `clearkey-manifest-patcher` runs the packaging workload.
+- `clearkey-license-server` runs the public playback and license service.
+
+On the first deployment, run `setup.py` with your normal administrator credentials. Terraform creates the deployer service account and grants it the provisioning roles. Include your human or CI principal so it can impersonate the deployer:
+
+```bash
+python3 setup.py \
+  --project-id clearkey-video-gcp \
+  --region europe-west2 \
+  --bucket-suffix your-account-suffix \
+  --deployer-impersonator user:you@example.com
+```
+
+The `--deployer-impersonator` option, or `GCP_DEPLOYER_IMPERSONATOR`, adds `roles/iam.serviceAccountTokenCreator` to the deployer service account. It does not create a service-account key.
+
+For later deployments, use impersonation:
+
+```bash
+DEPLOYER="clearkey-terraform-deployer@clearkey-video-gcp.iam.gserviceaccount.com"
+gcloud config set auth/impersonate_service_account "$DEPLOYER"
+
+python3 setup.py \
+  --project-id clearkey-video-gcp \
+  --region europe-west2 \
+  --bucket-suffix your-account-suffix
+```
+
+Verify impersonation before running the deployment:
+
+```bash
+gcloud auth print-access-token \
+  --impersonate-service-account="$DEPLOYER"
+```
+
+Remove the local impersonation setting when finished:
+
+```bash
+gcloud config unset auth/impersonate_service_account
+```
 
 For Terraform-only operations:
 
@@ -119,7 +169,7 @@ Upload a video:
 
 ```bash
 gcloud storage cp ./13028454_1920_1080_60fps.mp4 \
-  gs://clearkey-video-gcp-source-pineapple/demo-final.mp4
+  gs://clearkey-video-gcp-source-<bucket-suffix>/demo-final.mp4
 ```
 
 Check Transcoder jobs:
@@ -133,7 +183,7 @@ gcloud transcoder jobs list \
 The encrypted output is stored under:
 
 ```text
-gs://clearkey-video-gcp-egress-pineapple/outputs/demo-final/encrypted/
+gs://clearkey-video-gcp-egress-<bucket-suffix>/outputs/demo-final/encrypted/
 ```
 
 The player manifest endpoint is:
@@ -161,7 +211,11 @@ Then open `http://localhost:8080/index.html`.
 
 ## IAM Model
 
-The deployment uses separate service accounts for the Transcoder trigger, Transcoder service agent access, packaging, and the license server. Bucket access is granted per bucket and runtime role rather than project-wide storage administration.
+Terraform creates a dedicated `clearkey-terraform-deployer` service account for provisioning. It receives the project roles needed by this stack and can use the runtime service accounts through `roles/iam.serviceAccountUser`. It does not run application workloads.
+
+Pass `--deployer-impersonator user:you@example.com` (or set `GCP_DEPLOYER_IMPERSONATOR`) on the first deployment to allow a human or CI principal to impersonate the deployer. Future deployments should use impersonation rather than a deployer key. Runtime accounts do not receive Owner, Editor, or IAM administration roles.
+
+The application uses separate service accounts for the Transcoder trigger, packaging, and license server. Runtime accounts have resource-specific permissions and must not receive Owner, Editor, or IAM administration roles. Bucket access is granted per bucket and runtime role rather than project-wide storage administration.
 
 The license server is public because a browser must request its manifest, segments, and ClearKey license. The transcoder trigger and packager are not public; Eventarc invokes them through their dedicated service account. Custom roles limit the Transcoder trigger to `transcoder.jobs.create`, `transcoder.jobs.get`, and `transcoder.jobs.list`. The Transcoder and packager media writer role contains only `storage.objects.create`, `storage.objects.delete`, `storage.objects.get`, and `storage.objects.list`, and is granted only on the egress bucket.
 

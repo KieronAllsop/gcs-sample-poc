@@ -8,14 +8,20 @@ variable "region" {
   default = "europe-west2"
 }
 
+variable "deployer_impersonator_principal" {
+  type        = string
+  default     = null
+  description = "IAM principal allowed to impersonate the Terraform deployer service account, for example user:admin@example.com."
+}
+
 variable "source_bucket_name" {
   type    = string
-  default = "clearkey-video-gcp-source-pineapple"
+  default = "clearkey-video-gcp-source"
 }
 
 variable "egress_bucket_name" {
   type    = string
-  default = "clearkey-video-gcp-egress-pineapple"
+  default = "clearkey-video-gcp-egress"
 }
 
 variable "license_server_image" {

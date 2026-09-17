@@ -49,7 +49,7 @@ An MP4 is uploaded to the source bucket:
 
 ```bash
 gcloud storage cp video.mp4 \
-  gs://clearkey-video-gcp-source-pineapple/example.mp4
+  gs://clearkey-video-gcp-source-<bucket-suffix>/example.mp4
 ```
 
 The source bucket is private and has uniform bucket-level access enabled.
@@ -76,7 +76,7 @@ The initial POC configuration is video-only because the repository test file has
 Output is written to:
 
 ```text
-gs://clearkey-video-gcp-egress-pineapple/outputs/<video-id>/
+gs://clearkey-video-gcp-egress-<bucket-suffix>/outputs/<video-id>/
 ```
 
 The trigger checks existing Transcoder jobs by source label before creating a new job, so Eventarc retries do not normally create duplicate jobs.
@@ -109,7 +109,7 @@ The manual endpoint remains available for retries and testing. Normal uploads us
 Encrypted output is written to:
 
 ```text
-gs://clearkey-video-gcp-egress-pineapple/outputs/<video-id>/encrypted/
+gs://clearkey-video-gcp-egress-<bucket-suffix>/outputs/<video-id>/encrypted/
 ```
 
 The output includes:
@@ -163,6 +163,8 @@ The current POC includes a test-key fallback for unknown key IDs. That fallback 
 
 ## Security Boundaries
 
+- Infrastructure provisioning uses the dedicated `clearkey-terraform-deployer` service account. Human or CI identities impersonate it rather than using a deployer key.
+- The deployer can use the three workload service accounts through `roles/iam.serviceAccountUser`, but those workload accounts cannot administer the project.
 - Source MP4 files are unencrypted while stored in the source bucket.
 - Transcoder output is initially unencrypted until the packaging step completes.
 - The egress bucket is private.

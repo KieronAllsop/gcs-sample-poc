@@ -45,6 +45,11 @@ resource "google_service_account" "trigger" {
   display_name = "ClearKey Transcoding Trigger"
 }
 
+resource "google_service_account" "eventarc_invoker" {
+  account_id   = "clearkey-eventarc-invoker"
+  display_name = "ClearKey Eventarc Invoker"
+}
+
 resource "google_service_account" "manifest_patcher" {
   account_id   = "clearkey-manifest-patcher"
   display_name = "ClearKey Manifest Patcher"
@@ -53,6 +58,38 @@ resource "google_service_account" "manifest_patcher" {
 resource "google_service_account" "license_server" {
   account_id   = "clearkey-license-server"
   display_name = "ClearKey License Server"
+}
+
+resource "google_service_account" "terraform_deployer" {
+  account_id   = "clearkey-terraform-deployer"
+  display_name = "ClearKey Terraform Deployer"
+}
+
+resource "google_project_iam_member" "terraform_deployer" {
+  for_each = toset([
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/storage.admin",
+    "roles/artifactregistry.admin",
+    "roles/run.admin",
+    "roles/eventarc.admin",
+    "roles/cloudsql.admin",
+    "roles/secretmanager.admin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/iam.roleAdmin",
+    "roles/cloudbuild.builds.editor",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.terraform_deployer.email}"
+}
+
+resource "google_service_account_iam_member" "terraform_deployer_impersonator" {
+  count              = var.deployer_impersonator_principal == null ? 0 : 1
+  service_account_id = google_service_account.terraform_deployer.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = var.deployer_impersonator_principal
 }
 
 resource "google_secret_manager_secret" "database_password" {
@@ -87,14 +124,21 @@ resource "google_storage_bucket_iam_member" "transcoder_source" {
 
 resource "google_storage_bucket_iam_member" "transcoder_egress" {
   bucket = google_storage_bucket.egress.name
-  role   = google_project_iam_custom_role.media_object_writer.name
+  role   = "roles/storage.objectCreator"
   member = "serviceAccount:${local.transcoder_agent}"
 }
 
-resource "google_storage_bucket_iam_member" "trigger_source" {
-  bucket = google_storage_bucket.source.name
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.trigger.email}"
+resource "google_service_account_iam_member" "terraform_deployer_runtime_user" {
+  for_each = {
+    trigger          = google_service_account.trigger.name
+    eventarc_invoker = google_service_account.eventarc_invoker.name
+    manifest_patcher = google_service_account.manifest_patcher.name
+    license_server   = google_service_account.license_server.name
+  }
+
+  service_account_id = each.value
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.terraform_deployer.email}"
 }
 
 resource "google_storage_bucket_iam_member" "license_egress" {
@@ -130,6 +174,12 @@ resource "google_project_iam_custom_role" "media_object_writer" {
     "storage.objects.get",
     "storage.objects.list",
   ]
+}
+
+resource "google_project_iam_member" "eventarc_invoker_receiver" {
+  project = var.project_id
+  role    = "roles/eventarc.eventReceiver"
+  member  = "serviceAccount:${google_service_account.eventarc_invoker.email}"
 }
 
 resource "google_project_iam_member" "trigger_eventarc_receiver" {
@@ -389,7 +439,7 @@ resource "google_cloud_run_v2_service_iam_member" "packager_eventarc_invoker" {
   name     = google_cloud_run_v2_service.packager.name
   location = var.region
   role     = "roles/run.invoker"
-  member   = "serviceAccount:${google_service_account.trigger.email}"
+  member   = "serviceAccount:${google_service_account.eventarc_invoker.email}"
 }
 
 resource "google_eventarc_trigger" "source_mp4_finalized" {
@@ -438,7 +488,7 @@ resource "google_eventarc_trigger" "egress_manifest_finalized" {
     }
   }
 
-  service_account = google_service_account.trigger.email
+  service_account = google_service_account.eventarc_invoker.email
   depends_on = [
     google_project_iam_member.eventarc_service_agent,
     google_project_iam_member.storage_eventarc_publisher,
